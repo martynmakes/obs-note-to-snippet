@@ -1,6 +1,19 @@
 import esbuild from "esbuild";
 import process from "process";
 import { builtinModules } from 'node:module';
+import { copyFileSync } from 'fs';
+
+const PLUGIN_DIR = "D:/OneDrive/Obsidian Vault/MyVault/.obsidian/plugins/obs-note-to-snippet";
+
+const copyFilesPlugin = {
+	name: "copy-files",
+	setup(build) {
+		build.onEnd(() => {
+			copyFileSync("styles.css", `${PLUGIN_DIR}/styles.css`);
+			copyFileSync("manifest.json", `${PLUGIN_DIR}/manifest.json`);
+		});
+	},
+};
 
 const banner =
 `/*
@@ -37,8 +50,9 @@ const context = await esbuild.context({
 	logLevel: "info",
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
-	outfile: "main.js",
+	outfile: "D:/OneDrive/Obsidian Vault/MyVault/.obsidian/plugins/obs-note-to-snippet/main.js",
 	minify: prod,
+	plugins: [copyFilesPlugin],
 });
 
 if (prod) {
