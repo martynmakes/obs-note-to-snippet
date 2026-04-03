@@ -202,7 +202,9 @@ function restoreCodeBlocksHtml(html: string, blocks: string[]): string {
             const code = codeLines.slice(1, -1).join('\n');
             
             const languageClass = language ? ` class="language-${language}"` : '';
-            const htmlBlock = `<pre><code${languageClass}>${escapeHtml(code)}</code></pre>`;
+            // Add inline styles to ensure white background and black text
+            const preStyle = 'style="background-color: #ffffff !important; color: #000000 !important; padding: 1.2em 1.4em; margin: 1.4em 0; overflow: auto; border-radius: 6px; border-left: 3px solid #666666;"';
+            const htmlBlock = `<pre ${preStyle}><code${languageClass}>${escapeHtml(code)}</code></pre>`;
             
             // CRITICAL FIX: Use word boundary to avoid partial matches
             // E.g., OBSIDIAN2SQ_CODE_1 should NOT match in OBSIDIAN2SQ_CODE_10
@@ -485,8 +487,8 @@ const MERMAID_COMMENT = `<!--
 
 const EMBED_CSS = `pre[class*="language-"],
 code[class*="language-"] {
-  background: #1e1e1e;
-  color: #d4d4d4;
+  background: #ffffff !important;
+  color: #000000 !important;
   font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono',
                'Source Code Pro', Consolas, 'Courier New', monospace;
   font-size: 0.88em;
@@ -500,20 +502,34 @@ code[class*="language-"] {
   hyphens: none;
 }
 pre[class*="language-"] {
+  background: #ffffff !important;
   padding: 1.2em 1.4em;
   margin: 1.4em 0;
   overflow: auto;
   border-radius: 6px;
-  border-left: 3px solid #569cd6;
+  border-left: 3px solid #666666;
 }
 :not(pre) > code[class*="language-"] {
   padding: 0.15em 0.4em;
   border-radius: 3px;
+  background: #ffffff !important;
+  color: #000000 !important;
+}
+pre[class*="language-"] .highlight-lines .highlight-line {
+  background: transparent !important;
 }
 pre[class*="language-"]::-webkit-scrollbar { height: 6px; }
-pre[class*="language-"]::-webkit-scrollbar-track { background: #2d2d2d; }
-pre[class*="language-"]::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
-pre[class*="language-"]::-webkit-scrollbar-thumb:hover { background: #777; }
+pre[class*="language-"]::-webkit-scrollbar-track { background: #f5f5f5; }
+pre[class*="language-"]::-webkit-scrollbar-thumb { background: #999; border-radius: 3px; }
+pre[class*="language-"]::-webkit-scrollbar-thumb:hover { background: #666; }
+* {
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+}
+pre[class*="language-"],
+code[class*="language-"] {
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono',
+               'Source Code Pro', Consolas, 'Courier New', monospace;
+}
 .callout {
   border-left: 4px solid #ccc;
   border-radius: 0 6px 6px 0;
