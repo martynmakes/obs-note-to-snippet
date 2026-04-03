@@ -77,28 +77,35 @@ export default class SquarespaceExportPlugin extends Plugin {
         body = convertTags(body);
         body = convertCallouts(body);
 
-        // Restore code blocks now that converting is done.
-        body = restoreCodeBlocks(body, blocks);
+        // NOTE: DO NOT restore code blocks here! If we restore the fence delimiters before marked.parse,
+        // marked will see them as literal text and render them in paragraphs instead of parsing them as code blocks.
+        // Instead, we'll convert sentinels directly to HTML after marked.parse below.
 
         // Pre-process filename annotations before marked strips them from the info string.
         body = preprocessCodeFilenames(body);
 
         // Convert markdown to HTML, restore Mermaid divs, then fix code block classes for Prism.
-        const html = fixCodeFenceClasses(
-            restoreMermaid(
-                await marked.parse(body, { gfm: true, breaks: true }),
-                diagrams
-            )
-        );
+        const markedHtml = await marked.parse(body, { gfm: true, breaks: true });
+        
+        const restoredHtml = restoreCodeBlocksHtml(markedHtml, blocks);
+        
+        const mermaidHtml = restoreMermaid(restoredHtml, diagrams);
+        
+        const html = fixCodeFenceClasses(mermaidHtml);
 
         // Assemble the final output snippet with CSS, Prism/Mermaid setup comments and scripts.
         const hasMermaid = diagrams.length > 0;
         const output = buildOutput(html, hasMermaid, this.settings);
+        
+        // MARKER: Version with restoreCodeBlocksHtml after marked.parse (2026-04-03)
+        const versionMarker = "<!-- Plugin version: restoreCodeBlocksHtml-post-parse -->";
+        
+        const finalOutput = versionMarker + "\n" + output;
 
         const filename = sanitiseFilename(file.basename) + ".html";
         const outPath = normalizePath(this.settings.outputFolder + "/" + filename);
         await this.app.vault.adapter.mkdir(normalizePath(this.settings.outputFolder));
-        await this.app.vault.adapter.write(outPath, output);
+        await this.app.vault.adapter.write(outPath, finalOutput);
         new Notice("Exported → " + outPath);
 
         // Open the exported file in Obsidian if the setting is enabled.
@@ -133,8 +140,9 @@ function extractCodeBlocks(body: string): { body: string; blocks: string[] } {
 
     for (const line of lines) {
         if (!inBlock) {
-            // Detect opening fence: 3+ backticks or tildes at start of line
-            const match = line.match(/^(`{3,}|~{3,})/);
+            // Detect opening fence: 3+ backticks or tildes (allow leading indentation)
+            // Accept fences indented with spaces or tabs so examples like "\t```json" are caught.
+            const match = line.match(/^\s*(`{3,}|~{3,})/);
             if (match) {
                 inBlock = true;
                 fenceChar = match[1]![0]!;
@@ -145,8 +153,8 @@ function extractCodeBlocks(body: string): { body: string; blocks: string[] } {
             }
         } else {
             blockLines.push(line);
-            // Closing fence: same character, same or greater length, nothing else on line
-            const closeMatch = line.match(/^(`{3,}|~{3,})\s*$/);
+            // Closing fence : allow leading indentation, same character, same or greater length, nothing else on line
+            const closeMatch = line.match(/^\s*(`{3,}|~{3,})\s*$/);
             if (closeMatch && closeMatch[1]![0] === fenceChar && closeMatch[1]!.length >= fenceLen) {
                 const sentinel = `OBSIDIAN2SQ_CODE_${blocks.length}`;
                 blocks.push(blockLines.join('\n'));
@@ -172,6 +180,91 @@ function extractCodeBlocks(body: string): { body: string; blocks: string[] } {
 }
 
 // Restores extracted code blocks from sentinels after converting is done.
+// Restores extracted code blocks from sentinels after marked.parse has converted to HTML.
+// Converts sentinels like OBSIDIAN2SQ_CODE_0 directly to HTML <pre><code> or <code> tags.
+// This prevents fence delimiters from appearing as literal text in <p> tags.
+function restoreCodeBlocksHtml(html: string, blocks: string[]): string {
+    const result = blocks.reduce((text, block, i) => {
+        const sentinel = `OBSIDIAN2SQ_CODE_${i}`;
+        const beforeLength = text.length;
+        const isFenced = block.trimStart().match(/^`{3,}/);
+        const isInline = block.startsWith('`') && block.endsWith('`');
+        
+        // Distinguish between fenced (```...```) and inline (`...`) code
+        // Use trimStart() to handle indented fences (tabs/spaces before ```)
+        if (isFenced) {
+            // Fenced code block
+            const languageMatch = block.match(/^(`{3,})(\w+)?/) || block.match(/^\s*(`{3,})(\w+)?/);
+            const language = languageMatch?.[2] || '';
+            
+            // Extract just the code content (between opening and closing fences)
+            const codeLines = block.split('\n');
+            const code = codeLines.slice(1, -1).join('\n');
+            
+            const languageClass = language ? ` class="language-${language}"` : '';
+            const htmlBlock = `<pre><code${languageClass}>${escapeHtml(code)}</code></pre>`;
+            
+            // CRITICAL FIX: Use word boundary to avoid partial matches
+            // E.g., OBSIDIAN2SQ_CODE_1 should NOT match in OBSIDIAN2SQ_CODE_10
+            // Use (?:^|[^0-9_]) and (?:[^0-9_]|$) to ensure we only match complete sentinel
+            const sentinelEscaped = sentinel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            
+            // First try: block-level sentinel (alone in <p> tags)
+            text = text.replace(new RegExp(`<p>${sentinelEscaped}</p>`, 'g'), htmlBlock);
+            
+            // Second try: inline sentinel (part of flowing text in <p>)
+            text = text.replace(new RegExp(`<p>${sentinelEscaped}`, 'g'), htmlBlock);
+            
+            // Third try: any remaining sentinels with word boundaries
+            // Match: start-of-string OR non-word-char, then sentinel, then end-of-string OR non-word-char
+            if (text.includes(sentinel)) {
+                text = text.replace(new RegExp(`(?:^|[^\\w])${sentinelEscaped}(?:[^\\w]|$)`, 'g'), 
+                    (match) => {
+                        // Preserve the boundary characters
+                        const before = match[0] === sentinel ? '' : match[0];
+                        const after = match[match.length - 1] === sentinel ? '' : match[match.length - 1];
+                        return before + htmlBlock + after;
+                    });
+            }
+        } else if (isInline) {
+            // Inline code: backtick-wrapped
+            const codeContent = block.slice(1, -1);
+            const replacement = `<code>${escapeHtml(codeContent)}</code>`;
+            
+            // CRITICAL FIX: Use word boundary to avoid partial matches
+            const sentinelEscaped = sentinel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            
+            // Try with word boundaries: won't match OBSIDIAN2SQ_CODE_1 in OBSIDIAN2SQ_CODE_10
+            text = text.replace(new RegExp(`(?:^|[^\\w])${sentinelEscaped}(?:[^\\w]|$)`, 'g'),
+                (match) => {
+                    // Preserve the boundary characters
+                    const before = match[0] === sentinel ? '' : match[0];
+                    const after = match[match.length - 1] === sentinel ? '' : match[match.length - 1];
+                    return before + replacement + after;
+                });
+        } else {
+            // Unknown block type - should not happen
+        }
+        
+        return text;
+    }, html);
+    
+    return result;
+}
+
+// Escapes HTML special characters to prevent injection
+function escapeHtml(str: string): string {
+    const map: Record<string, string> = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+    };
+    return str.replace(/[&<>"']/g, c => map[c] || c);
+}
+
+// OLD: Restores extracted code blocks from sentinels after converting is done.
 function restoreCodeBlocks(body: string, blocks: string[]): string {
     return blocks.reduce((text, block, i) =>
         text.replace(`OBSIDIAN2SQ_CODE_${i}`, block), body);
